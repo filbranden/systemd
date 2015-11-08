@@ -23,8 +23,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "alloc-util.h"
+#include "env-util.h"
 #include "extract-word.h"
 #include "log.h"
+#include "specifier.h"
+#include "strv.h"
 #include "string-util.h"
 
 static void test_extract_first_word(void) {
@@ -369,6 +373,25 @@ static void test_extract_first_word(void) {
 
         assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
         assert_se(streq(t, "abcdef%izzz${abc} \\naaa\\\\ \\ $VAR1 \\u03a0"));
+
+        /* Try resolving specifiers. */
+        {
+                const Specifier table[] = {
+                        { 'i', specifier_string, (char *) "expanded_specifier" },
+                        {}
+                };
+                char *env[] = {
+                        (char *) "abc=123",
+                        (char *) "VAR1=two words",
+                        NULL,
+                };
+                _cleanup_free_ char *expand_specifiers = NULL, *expand_env = NULL;
+
+                assert_se(specifier_printf(t, table, NULL, &expand_specifiers) == 0);
+                assert_se(expand_env = replace_env(expand_specifiers, env));
+                assert_se(streq(expand_env, "abcdefexpanded_specifierzzz123 \\naaa\\\\ \\ $VAR1 \\u03a0"));
+        }
+
         free(t);
         assert_se(isempty(p));
 
@@ -385,6 +408,26 @@ static void test_extract_first_word(void) {
 
         assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES|EXTRACT_CONTAINS_VARIABLES|EXTRACT_CONTAINS_SPECIFIERS) > 0);
         assert_se(streq(t, "abcdef%%izzz$${abc} \\naaa\\\\ \\ $$VAR1 \\u03a0"));
+
+        /* Try resolving specifiers. */
+        {
+                const Specifier table[] = {
+                        { 'i', specifier_string, (char *) "expanded_specifier" },
+                        {}
+                };
+                char *env[] = {
+                        (char *) "abc=123",
+                        (char *) "VAR1=two words",
+                        NULL,
+                };
+                _cleanup_free_ char *expand_specifiers = NULL, *expand_env = NULL;
+
+                assert_se(specifier_printf(t, table, NULL, &expand_specifiers) == 0);
+                assert_se(expand_env = replace_env(expand_specifiers, env));
+                /* Same as original string except for the outer `backticks`. */
+                assert_se(streq(expand_env, "abcdef%izzz${abc} \\naaa\\\\ \\ $VAR1 \\u03a0"));
+        }
+
         free(t);
         assert_se(isempty(p));
 
