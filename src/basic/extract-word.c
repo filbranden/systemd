@@ -32,7 +32,7 @@ int extract_first_word(const char **p, char **ret, const char *separators, Extra
         char c;
         int r;
 
-        char quote = 0;                 /* 0 or ' or " */
+        char quote = 0;                 /* 0 or ' or " or ` */
         bool backslash = false;         /* whether we've just seen a backslash */
 
         assert(p);
@@ -119,6 +119,31 @@ int extract_first_word(const char **p, char **ret, const char *separators, Extra
 
                         backslash = false;
 
+                } else if (quote == '`') {      /* backticks means literal quoting */
+                        for (;; (*p) ++, c = **p) {
+                                if (c == 0) {
+                                        if (flags & EXTRACT_RELAX)
+                                                goto finish_force_terminate;
+                                        return -EINVAL;
+                                } else if (c == quote) {        /* found the end quote */
+                                        quote = 0;
+                                        break;
+                                } else if ((c == '$' && (flags & EXTRACT_CONTAINS_VARIABLES)) ||
+                                           (c == '%' && (flags & EXTRACT_CONTAINS_SPECIFIERS))) {
+                                        /* Double the $$ or %% to prevent the function of expanding it */
+                                        if (!GREEDY_REALLOC(s, allocated, sz+3))
+                                                return -ENOMEM;
+
+                                        s[sz++] = c;
+                                        s[sz++] = c;
+                                } else {
+                                        if (!GREEDY_REALLOC(s, allocated, sz+2))
+                                                return -ENOMEM;
+
+                                        s[sz++] = c;
+                                }
+                        }
+
                 } else if (quote) {     /* inside either single or double quotes */
                         for (;; (*p) ++, c = **p) {
                                 if (c == 0) {
@@ -143,7 +168,7 @@ int extract_first_word(const char **p, char **ret, const char *separators, Extra
                         for (;; (*p) ++, c = **p) {
                                 if (c == 0)
                                         goto finish_force_terminate;
-                                else if ((c == '\'' || c == '"') && (flags & EXTRACT_QUOTES)) {
+                                else if ((c == '\'' || c == '"' || c == '`') && (flags & EXTRACT_QUOTES)) {
                                         quote = c;
                                         break;
                                 } else if (c == '\\') {

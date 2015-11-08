@@ -325,6 +325,73 @@ static void test_extract_first_word(void) {
         assert_se(extract_first_word(&p, &t, ":", EXTRACT_DONT_COALESCE_SEPARATORS) == 0);
         assert_se(!t);
         assert_se(!p);
+
+        /* Backticks for quoting literals. */
+        p = original = "`foobar` `waldo`";
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "foobar"));
+        free(t);
+        assert_se(p == original + 9);
+
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "waldo"));
+        free(t);
+        assert_se(isempty(p));
+
+        assert_se(extract_first_word(&p, &t, NULL, 0) == 0);
+        assert_se(!t);
+        assert_se(isempty(p));
+
+        /* Escaping literal backticks, must close first expression, insert a
+         * literal one with other quoting or escaping, then reopen a new
+         * backtick literal string. */
+        p = original = "`foo`\\``bar` `wal`'`'`do`";
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "foo`bar"));
+        free(t);
+        assert_se(p == original + 13);
+
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "wal`do"));
+        free(t);
+        assert_se(isempty(p));
+
+        assert_se(extract_first_word(&p, &t, NULL, 0) == 0);
+        assert_se(!t);
+        assert_se(isempty(p));
+
+        /* Complex expressions including variables and specifiers. */
+        p = original = "/bin/echo `abcdef%izzz${abc} \\naaa\\\\ \\ $VAR1 \\u03a0`";
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "/bin/echo"));
+        free(t);
+        assert_se(p == original + 10);
+
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES) > 0);
+        assert_se(streq(t, "abcdef%izzz${abc} \\naaa\\\\ \\ $VAR1 \\u03a0"));
+        free(t);
+        assert_se(isempty(p));
+
+        assert_se(extract_first_word(&p, &t, NULL, 0) == 0);
+        assert_se(!t);
+        assert_se(isempty(p));
+
+        /* Check EXTRACT_CONTAINS_VARIABLES|EXTRACT_CONTAINS_SPECIFIERS. */
+        p = original = "/bin/echo `abcdef%izzz${abc} \\naaa\\\\ \\ $VAR1 \\u03a0`";
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES|EXTRACT_CONTAINS_VARIABLES|EXTRACT_CONTAINS_SPECIFIERS) > 0);
+        assert_se(streq(t, "/bin/echo"));
+        free(t);
+        assert_se(p == original + 10);
+
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_QUOTES|EXTRACT_CONTAINS_VARIABLES|EXTRACT_CONTAINS_SPECIFIERS) > 0);
+        assert_se(streq(t, "abcdef%%izzz$${abc} \\naaa\\\\ \\ $$VAR1 \\u03a0"));
+        free(t);
+        assert_se(isempty(p));
+
+        assert_se(extract_first_word(&p, &t, NULL, 0) == 0);
+        assert_se(!t);
+        assert_se(isempty(p));
+
 }
 
 static void test_extract_first_word_and_warn(void) {
