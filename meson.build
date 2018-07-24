@@ -189,6 +189,7 @@ conf.set_quoted('SYSTEMD_BINARY_PATH',                        join_paths(rootlib
 conf.set_quoted('SYSTEMD_FSCK_PATH',                          join_paths(rootlibexecdir, 'systemd-fsck'))
 conf.set_quoted('SYSTEMD_MAKEFS_PATH',                        join_paths(rootlibexecdir, 'systemd-makefs'))
 conf.set_quoted('SYSTEMD_GROWFS_PATH',                        join_paths(rootlibexecdir, 'systemd-growfs'))
+conf.set_quoted('SYSTEMD_PWDLOCK_BINARY_PATH',                join_paths(rootlibexecdir, 'systemd-pwdlock'))
 conf.set_quoted('SYSTEMD_SHUTDOWN_BINARY_PATH',               join_paths(rootlibexecdir, 'systemd-shutdown'))
 conf.set_quoted('SYSTEMD_SLEEP_BINARY_PATH',                  join_paths(rootlibexecdir, 'systemd-sleep'))
 conf.set_quoted('SYSTEMCTL_BINARY_PATH',                      join_paths(rootbindir, 'systemctl'))
@@ -2567,6 +2568,17 @@ executable('systemd-sulogin-shell',
            install_rpath : rootlibexecdir,
            install : true,
            install_dir : rootlibexecdir)
+
+if conf.get('HAVE_SELINUX') == 1
+        executable('systemd-pwdlock',
+                   'src/pwdlock/pwdlock.c',
+                   include_directories : includes,
+                   link_with : [libshared],
+                   dependencies : [libselinux],
+                   install_rpath : rootlibexecdir,
+                   install : true,
+                   install_dir : rootlibexecdir)
+endif
 
 ############################################################
 

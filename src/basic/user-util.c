@@ -15,13 +15,17 @@
 #include <utmp.h>
 
 #include "alloc-util.h"
+#include "exit-status.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "io-util.h"
 #include "macro.h"
 #include "missing.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "process-util.h"
+#include "socket-util.h"
 #include "string-util.h"
 #include "strv.h"
 #include "user-util.h"
@@ -564,6 +568,66 @@ int take_etc_passwd_lock(const char *root) {
         }
 
         return fd;
+}
+
+int selinux_take_etc_passwd_lock(const char *root) {
+
+#if HAVE_SELINUX
+        _cleanup_close_pair_ int pair[2] = { -1, -1 };
+        ssize_t k;
+        int r;
+
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) < 0)
+                return -errno;
+
+        r = safe_fork("(pwdlock)", FORK_RESET_SIGNALS|FORK_DEATHSIG|FORK_WAIT, NULL);
+        if (r < 0)
+                return r;
+        if (r == 0) {
+                /* Child */
+                const char * const cmdline[] = {
+                        SYSTEMD_PWDLOCK_BINARY_PATH,
+                        root,
+                        NULL
+                };
+                char *fdstr;
+
+                pair[0] = safe_close(pair[0]);
+
+                if ((asprintf(&fdstr, "%d", pair[1]) < 0) ||
+                    (setenv("SYSTEMD_PWDLOCK_TRANSPORT_FD", fdstr, 1) < 0) ||
+                    (fd_cloexec(pair[1], false) < 0))
+                        _exit(EXIT_FAILURE);
+
+                execv(cmdline[0], (char**) cmdline);
+                _exit(EXIT_FAILURE); /* Operational error */
+        }
+
+        /* Parent */
+        _cleanup_close_ int lock_fd = -1;
+        int error;
+        struct iovec iov = IOVEC_INIT(&error, sizeof(error));
+
+        pair[1] = safe_close(pair[1]);
+
+        k = receive_one_fd_iov(pair[0], &iov, 1, MSG_DONTWAIT, &lock_fd);
+        if (k < 0)
+                return (ssize_t) k;
+
+        if (lock_fd < 0) {
+                if (k == sizeof(error) && error < 0)
+                        return error;
+
+                log_error("Invalid return from systemd-pwdlock.");
+                return -EIO;
+        }
+
+        return TAKE_FD(lock_fd);
+
+#else  /* ! HAVE_SELINUX */
+
+        return take_etc_passwd_lock(root);
+#endif
 }
 
 bool valid_user_group_name(const char *u) {

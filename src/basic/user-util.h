@@ -41,6 +41,7 @@ int get_shell(char **_ret);
 int reset_uid_gid(void);
 
 int take_etc_passwd_lock(const char *root);
+int selinux_take_etc_passwd_lock(const char *root);
 
 #define UID_INVALID ((uid_t) -1)
 #define GID_INVALID ((gid_t) -1)

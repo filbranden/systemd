@@ -406,7 +406,7 @@ static int dynamic_user_realize(
                 /* Let's see if a proper, static user or group by this name exists. Try to take the lock on
                  * /etc/passwd, if that fails with EROFS then /etc is read-only. In that case it's fine if we don't
                  * take the lock, given that users can't be added there anyway in this case. */
-                etc_passwd_lock_fd = take_etc_passwd_lock(NULL);
+                etc_passwd_lock_fd = selinux_take_etc_passwd_lock(NULL);
                 if (etc_passwd_lock_fd < 0 && etc_passwd_lock_fd != -EROFS)
                         return etc_passwd_lock_fd;
 
