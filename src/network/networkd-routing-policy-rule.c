@@ -102,39 +102,15 @@ static int routing_policy_rule_compare_func(const void *_a, const void *_b) {
         switch (a->family) {
         case AF_INET:
         case AF_INET6:
-                r = CMP(a->from_prefixlen, b->from_prefixlen);
-                if (r != 0)
-                        return r;
-
-                r = CMP(a->to_prefixlen, b->to_prefixlen);
-                if (r != 0)
-                        return r;
-
-                r = CMP(a->tos, b->tos);
-                if (r != 0)
-                        return r;
-
-                r = CMP(a->fwmask, b->fwmask);
-                if (r != 0)
-                        return r;
-
-                r = CMP(a->table, b->table);
-                if (r != 0)
-                        return r;
-
-                r = strcmp_ptr(a->iif, b->iif);
-                if (!r)
-                        return r;
-
-                r = strcmp_ptr(a->oif, b->oif);
-                if (!r)
-                        return r;
-
-                r = memcmp(&a->from, &b->from, FAMILY_ADDRESS_SIZE(a->family));
-                if (r != 0)
-                        return r;
-
-                return memcmp(&a->to, &b->to, FAMILY_ADDRESS_SIZE(a->family));
+                return CMP(a->from_prefixlen, b->from_prefixlen) ?:
+                       CMP(a->to_prefixlen, b->to_prefixlen) ?:
+                       CMP(a->tos, b->tos) ?:
+                       CMP(a->fwmask, b->fwmask) ?:
+                       CMP(a->table, b->table) ?:
+                       strcmp_ptr(a->iif, b->iif) ?:
+                       strcmp_ptr(a->oif, b->oif) ?:
+                       memcmp(&a->from, &b->from, FAMILY_ADDRESS_SIZE(a->family)) ?:
+                       memcmp(&a->to, &b->to, FAMILY_ADDRESS_SIZE(a->family));
 
         default:
                 /* treat any other address family as AF_UNSPEC */
