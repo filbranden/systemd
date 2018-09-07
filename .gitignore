@@ -35,3 +35,9 @@
 /mkosi.output/
 /tags
 __pycache__/
+
+# Used for hacking on Fedora (see doc/hacking/fedora/README.md)
+/.file-list-*
+/debug*.list
+/elfbins.list
+/systemd.lang
