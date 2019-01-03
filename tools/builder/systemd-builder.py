@@ -91,18 +91,25 @@ def rerun_as_builder():
 
 def create_parser():
     parser = argparse.ArgumentParser(prog=PROGNAME)
-    subparsers = parser.add_subparsers(dest='subcommand', help='subcommands')
-    subparsers.add_parser('setup', help='set up container for builder')
-    subparsers.add_parser('build', help='build source tree')
+    subparsers = parser.add_subparsers(dest='cmd')
+    subparsers.add_parser('setup')
+    subparsers.add_parser('debugshell')
+    build_parser = subparsers.add_parser('build', help='build source tree')
+    build_parser.add_argument('--test', action='store_true', help='run ninja tests after building')
     return parser
 
 # Subcommands: These implement the actual commands such as "build" and "setup".
 # More commands can be added for specialized builders.
 
-def cmd_setup():
+def cmd_setup(opts):
     must_run_as_root('setup')
     os.mkdir(BUILDER_SRC_TREE)
     os.mkdir(BUILDER_DST_TREE)
+
+def cmd_debugshell(opts):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv('/bin/bash', ['-/bin/bash'])
 
 def check_src_tree():
     if not os.path.ismount(BUILDER_SRC_TREE):
@@ -111,21 +118,26 @@ def check_src_tree():
     if not os.path.exists(os.path.join(BUILDER_SRC_TREE, 'src/core/main.c')):
         raise Error('Source tree [{}] does not look like it contains systemd sources.'.format(BUILDER_SRC_TREE))
 
-def cmd_build():
+def cmd_build(opts):
     rerun_as_builder()
     check_src_tree()
     subprocess.check_call(['meson', BUILDER_DST_TREE], cwd=BUILDER_SRC_TREE)
     subprocess.check_call(['ninja'], cwd=BUILDER_DST_TREE)
+    if opts.test:
+        subprocess.check_call(['ninja', 'test'], cwd=BUILDER_DST_TREE)
 
 COMMANDS = {
     'setup': cmd_setup,
+    'debugshell': cmd_debugshell,
     'build': cmd_build,
 }
 
 def run_main():
     parser = create_parser()
     opts = parser.parse_args()
-    COMMANDS[opts.subcommand]()
+    if not opts.cmd:
+        parser.error('subcommand is required')
+    COMMANDS[opts.cmd](opts)
 
 def main(args):
     try:
