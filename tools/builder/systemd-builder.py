@@ -33,12 +33,22 @@ def reexec_unprivileged(uid, gid):
     sys.stderr.flush()
     os.execv(os.path.realpath(__file__), sys.argv)
 
+def check_docker_on_mac():
+    # On Docker for Mac, external mounts show up as 'root', regardless of
+    # the external user. So make an exception and run as root in that case.
+    # This code detects the 'BHYVE' hypervisor specifically, which is the
+    # one used by Docker for Mac.
+    try:
+        with open('/sys/devices/virtual/dmi/id/product_name') as pn_file:
+            pn = pn_file.read().rstrip()
+            return pn == 'BHYVE'
+    except OSError:
+        return False
+
 def expected_builder_user_credentials():
     if not os.path.ismount(BUILDER_DST_TREE):
         raise Error('Expected build tree [{}] to be a mount.'.format(BUILDER_DST_TREE))
     st = os.stat(BUILDER_DST_TREE)
-    if st.st_uid < 1000 or st.st_gid < 1000:
-        raise Error('Build tree UID/GID outside of user range: {}/{}'.format(st.st_uid, st.st_gid))
     return (st.st_uid, st.st_gid)
 
 def check_builder_user_exists(uid, gid):
@@ -62,6 +72,11 @@ def rerun_as_builder():
         # Assume running under correct user if we're running as non-root.
         return
     uid, gid = expected_builder_user_credentials()
+    if uid == 0 and gid == 0 and check_docker_on_mac():
+        # Do not reexec_unprivileged in this case.
+        return
+    if uid < 1000 or gid < 1000:
+        raise Error('Build tree UID/GID outside of user range: {}/{}'.format(uid, gid))
     if not check_builder_user_exists(uid, gid):
         create_builder_user(uid, gid)
     reexec_unprivileged(uid, gid)
