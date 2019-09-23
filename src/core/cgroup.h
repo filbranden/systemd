@@ -110,6 +110,7 @@ struct CGroupContext {
         bool default_memory_low_set;
         bool memory_min_set;
         bool memory_low_set;
+        bool memory_auto_pilot;
 
         LIST_HEAD(IPAddressAccessItem, ip_address_allow);
         LIST_HEAD(IPAddressAccessItem, ip_address_deny);
@@ -221,7 +222,12 @@ int unit_watch_all_pids(Unit *u);
 
 int unit_synthesize_cgroup_empty_event(Unit *u);
 
+/* For MemoryAutoPilot. */
+void cgroup_apply_unified_memory_limit(Unit *u, const char *file, uint64_t v);
+
 int unit_get_memory_current(Unit *u, uint64_t *ret);
+int unit_get_memory_high(Unit *u, uint64_t *ret);
+int unit_get_memory_pressure_total(Unit *u, uint64_t *ret);
 int unit_get_tasks_current(Unit *u, uint64_t *ret);
 int unit_get_cpu_usage(Unit *u, nsec_t *ret);
 int unit_get_io_accounting(Unit *u, CGroupIOAccountingMetric metric, bool allow_cache, uint64_t *ret);

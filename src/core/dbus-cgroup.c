@@ -356,6 +356,7 @@ const sd_bus_vtable bus_cgroup_vtable[] = {
         SD_BUS_PROPERTY("MemoryMax", "t", NULL, offsetof(CGroupContext, memory_max), 0),
         SD_BUS_PROPERTY("MemorySwapMax", "t", NULL, offsetof(CGroupContext, memory_swap_max), 0),
         SD_BUS_PROPERTY("MemoryLimit", "t", NULL, offsetof(CGroupContext, memory_limit), 0),
+        SD_BUS_PROPERTY("MemoryAutoPilot", "b", bus_property_get_bool, offsetof(CGroupContext, memory_auto_pilot), 0),
         SD_BUS_PROPERTY("DevicePolicy", "s", property_get_cgroup_device_policy, offsetof(CGroupContext, device_policy), 0),
         SD_BUS_PROPERTY("DeviceAllow", "a(ss)", property_get_device_allow, 0, 0),
         SD_BUS_PROPERTY("TasksAccounting", "b", bus_property_get_bool, offsetof(CGroupContext, tasks_accounting), 0),
@@ -748,6 +749,9 @@ int bus_cgroup_set_property(
 
         if (streq(name, "MemoryAccounting"))
                 return bus_cgroup_set_boolean(u, name, &c->memory_accounting, CGROUP_MASK_MEMORY, message, flags, error);
+
+        if (streq(name, "MemoryAutoPilot"))
+                return bus_cgroup_set_boolean(u, name, &c->memory_auto_pilot, CGROUP_MASK_MEMORY, message, flags, error);
 
         if (streq(name, "MemoryMin"))
                 return bus_cgroup_set_memory_protection(u, name, &c->memory_min, message, flags, error);
@@ -1506,6 +1510,7 @@ int bus_cgroup_set_property(
                 }
 
                 return 1;
+
         }
 
         if (streq(name, "DisableControllers") || (u->transient && u->load_state == UNIT_STUB))

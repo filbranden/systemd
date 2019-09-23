@@ -2817,6 +2817,180 @@ void unit_dequeue_rewatch_pids(Unit *u) {
         u->rewatch_pids_event_source = sd_event_source_unref(u->rewatch_pids_event_source);
 }
 
+/* Check if total pressure exceeds threshold in an interval.
+ *
+ * The below constants stop putting pressure on the cgroup if
+ * current pressure exceeds 10ms blocked in memory operations
+ * within a 6s interval.
+ */
+#define MEMORY_AUTO_PILOT_MEASURE_INTERVAL      6               /* seconds */
+#define MEMORY_AUTO_PILOT_PRESSURE_THRESHOLD    (10*1000)       /* microseconds */
+
+/* Minimum and maximum limits for memory.high set by auto-pilot. */
+#define MEMORY_AUTO_PILOT_LIMIT_MAX             (100ULL << 30)     /* 100GiB */
+#define MEMORY_AUTO_PILOT_LIMIT_MIN             (100ULL << 20)     /* 100MiB */
+
+/* Speed and limit when squeezing the cgroup's memory. */
+#define MEMORY_AUTO_PILOT_PROBE_COEFFICIENT     10              /* ??? */
+#define MEMORY_AUTO_PILOT_PROBE_LIMIT           0.01            /* % ? */
+
+/* Speed and limit when backing off after creating pressure. */
+#define MEMORY_AUTO_PILOT_BACKOFF_COEFFICIENT   20              /* ??? */
+#define MEMORY_AUTO_PILOT_BACKOFF_LIMIT         1.0             /* % ? */
+
+static int on_memory_auto_pilot_timer(sd_event_source *s, uint64_t tick, void *userdata) {
+        Unit *u = userdata;
+        int r;
+        uint64_t current_pressure_total;
+        uint64_t memory_high, orig_memory_high;
+
+        assert(s);
+        assert(u);
+
+        log_unit_debug(u, "MemoryAutoPilot running, countdown: %d", u->memory_pressure_countdown);
+
+        r = unit_get_memory_pressure_total(u, &current_pressure_total);
+        if (r < 0)
+                return log_unit_warning_errno(u, r, "Failed reading from memory.pressure file: %m");
+
+        if (current_pressure_total - u->memory_pressure_total > MEMORY_AUTO_PILOT_PRESSURE_THRESHOLD) {
+                /* Too much pressure, let's back off. */
+
+                /* How much more pressure than the threshold did we put? */
+                double ratio = (double)(current_pressure_total - u->memory_pressure_total) / MEMORY_AUTO_PILOT_PRESSURE_THRESHOLD;
+
+                /* Apply coefficient and square it, to calculate the adjustment. */
+                double adjustment = (ratio / MEMORY_AUTO_PILOT_BACKOFF_COEFFICIENT);
+                adjustment = adjustment * adjustment;
+
+                /* And use that as a proportion to the limit. */
+                if (adjustment > 1.0)
+                        adjustment = 1.0;
+                adjustment = adjustment * MEMORY_AUTO_PILOT_BACKOFF_LIMIT;
+
+                /* Finally, increase memory.high by adjustment. */
+                r = unit_get_memory_high(u, &memory_high);
+                if (r < 0 || memory_high == (uint64_t)-1) {
+                        r = unit_get_memory_current(u, &memory_high);
+                        if (r < 0)
+                                return log_unit_warning_errno(u, r, "Failed to find memory.high file: %m");
+                }
+                orig_memory_high = memory_high;
+                memory_high = PAGE_ALIGN((uint64_t) (memory_high * (1.0 + adjustment)));
+                memory_high = MAX(MEMORY_AUTO_PILOT_LIMIT_MIN,
+                              MIN(MEMORY_AUTO_PILOT_LIMIT_MAX, memory_high));
+                memory_high = PAGE_ALIGN(memory_high);
+                cgroup_apply_unified_memory_limit(u, "memory.high", memory_high);
+                log_unit_debug(u, "MemoryAutoPilot backoff: %lu -> %lu, pressure: %lu, countdown: %d",
+                                orig_memory_high, memory_high,
+                                current_pressure_total - u->memory_pressure_total,
+                                u->memory_pressure_countdown);
+
+                /* Reset the countdown and initial total for next cycle. */
+                u->memory_pressure_countdown = MEMORY_AUTO_PILOT_MEASURE_INTERVAL;
+                u->memory_pressure_total = current_pressure_total;
+        } else if (--u->memory_pressure_countdown == 0) {
+                /* Countdown expired, let's put more pressure. */
+
+                /* Also be proportional to how much actual pressure exists. */
+                double ratio = MEMORY_AUTO_PILOT_PRESSURE_THRESHOLD / (double)MIN(1, current_pressure_total - u->memory_pressure_total);
+
+                /* Apply coefficient and square it, to calculate the adjustment. */
+                double adjustment = (ratio / MEMORY_AUTO_PILOT_PROBE_COEFFICIENT);
+                adjustment = adjustment * adjustment;
+
+                /* And use that as a proportion to the limit. */
+                if (adjustment > 1.0)
+                        adjustment = 1.0;
+                adjustment = adjustment * MEMORY_AUTO_PILOT_PROBE_LIMIT;
+
+                /* Finally, decrease memory.high by adjustment. */
+                r = unit_get_memory_high(u, &memory_high);
+                if (r < 0 || memory_high == (uint64_t)-1) {
+                        r = unit_get_memory_current(u, &memory_high);
+                        if (r < 0)
+                                return log_unit_warning_errno(u, r, "Failed to find memory.high file: %m");
+                }
+                orig_memory_high = memory_high;
+                memory_high = PAGE_ALIGN((uint64_t) (memory_high * (1.0 - adjustment)));
+                memory_high = MAX(MEMORY_AUTO_PILOT_LIMIT_MIN,
+                              MIN(MEMORY_AUTO_PILOT_LIMIT_MAX, memory_high));
+                cgroup_apply_unified_memory_limit(u, "memory.high", memory_high);
+                log_unit_debug(u, "MemoryAutoPilot probe: %lu -> %lu, pressure: %lu",
+                                orig_memory_high, memory_high,
+                                current_pressure_total - u->memory_pressure_total);
+
+                /* Reset the countdown and initial total for next cycle. */
+                u->memory_pressure_countdown = MEMORY_AUTO_PILOT_MEASURE_INTERVAL;
+                u->memory_pressure_total = current_pressure_total;
+        }
+
+        /* Reschedule ourselves to run on the next second again. */
+        if (u->memory_auto_pilot_event_source) {
+                log_unit_debug(u, "Rescheduling MemoryAutoPilot timer for %lu.", tick + USEC_PER_SEC);
+                r = sd_event_source_set_time(u->memory_auto_pilot_event_source, tick + USEC_PER_SEC);
+                if (r < 0)
+                        return log_unit_warning_errno(u, r, "Failed to reschedule memory-auto-pilot: %m");
+        }
+
+        return 0;
+}
+
+int unit_start_memory_auto_pilot(Unit *u) {
+        int r;
+        uint64_t when;
+
+        assert(u);
+
+        if (!u->cgroup_path)
+                return -ENOENT;
+
+        if (u->memory_auto_pilot_event_source)
+                /* Already enabled??? */
+                return 0;
+
+        r = unit_get_memory_pressure_total(u, &u->memory_pressure_total);
+        if (r < 0)
+                return log_warning_errno(r, "MemoryAutoPilot only available when memory.pressure is available.");
+        u->memory_pressure_countdown = MEMORY_AUTO_PILOT_MEASURE_INTERVAL;
+
+        when = now(CLOCK_MONOTONIC) + USEC_PER_SEC;
+        r = sd_event_add_time(u->manager->event, &u->memory_auto_pilot_event_source,
+                        CLOCK_MONOTONIC, when, 0,
+                        on_memory_auto_pilot_timer, u);
+        sd_event_source_set_enabled(u->memory_auto_pilot_event_source, SD_EVENT_ON);
+        log_unit_debug(u, "Scheduled MemoryAutoPilot timer for %lu.", when);
+        if (r < 0)
+                return log_error_errno(r, "Failed to install timer for auto-pilot: %m");
+
+        (void) sd_event_source_set_description(
+                        u->memory_auto_pilot_event_source, "memory-auto-pilot");
+
+        log_unit_debug(u, "MemoryAutoPilot started");
+
+        return 0;
+}
+
+void unit_stop_memory_auto_pilot(Unit *u) {
+        CGroupContext *c = unit_get_cgroup_context(u);
+
+        assert(u);
+        assert(c);
+
+        if (!u->memory_auto_pilot_event_source)
+                /* Already disabled. */
+                return;
+
+        sd_event_source_set_enabled(u->memory_auto_pilot_event_source, SD_EVENT_OFF);
+        sd_event_source_unref(u->memory_auto_pilot_event_source);
+        u->memory_auto_pilot_event_source = NULL;
+
+        /* Return memory.high to its default / original value! */
+        cgroup_apply_unified_memory_limit(u, "memory.high", c->memory_high);
+
+        log_unit_debug(u, "MemoryAutoPilot stopped, memory.high reset to %lu", c->memory_high);
+}
+
 bool unit_job_is_applicable(Unit *u, JobType j) {
         assert(u);
         assert(j >= 0 && j < _JOB_TYPE_MAX);

@@ -422,8 +422,8 @@ static int bus_append_cgroup_property(sd_bus_message *m, const char *field, cons
                 return bus_append_string(m, field, eq);
 
         if (STR_IN_SET(field,
-                       "CPUAccounting", "MemoryAccounting", "IOAccounting", "BlockIOAccounting",
-                       "TasksAccounting", "IPAccounting"))
+                       "CPUAccounting", "MemoryAccounting", "MemoryAutoPilot",
+                       "IOAccounting", "BlockIOAccounting", "TasksAccounting", "IPAccounting"))
 
                 return bus_append_parse_boolean(m, field, eq);
 

@@ -249,6 +249,7 @@ void cgroup_context_dump(CGroupContext *c, FILE* f, const char *prefix) {
                 "%sMemoryMax=%" PRIu64 "\n"
                 "%sMemorySwapMax=%" PRIu64 "\n"
                 "%sMemoryLimit=%" PRIu64 "\n"
+                "%sMemoryAutoPilot=%s\n"
                 "%sTasksMax=%" PRIu64 "\n"
                 "%sDevicePolicy=%s\n"
                 "%sDisableControllers=%s\n"
@@ -277,6 +278,7 @@ void cgroup_context_dump(CGroupContext *c, FILE* f, const char *prefix) {
                 prefix, c->memory_max,
                 prefix, c->memory_swap_max,
                 prefix, c->memory_limit,
+                prefix, yes_no(c->memory_auto_pilot),
                 prefix, c->tasks_max,
                 prefix, cgroup_device_policy_to_string(c->device_policy),
                 prefix, strempty(disable_controllers_str),
@@ -935,10 +937,10 @@ static bool unit_has_unified_memory_config(Unit *u) {
 
         return c->memory_min > 0 || unit_get_ancestor_memory_low(u) > 0 ||
                c->memory_high != CGROUP_LIMIT_MAX || c->memory_max != CGROUP_LIMIT_MAX ||
-               c->memory_swap_max != CGROUP_LIMIT_MAX;
+               c->memory_swap_max != CGROUP_LIMIT_MAX || c->memory_auto_pilot;
 }
 
-static void cgroup_apply_unified_memory_limit(Unit *u, const char *file, uint64_t v) {
+void cgroup_apply_unified_memory_limit(Unit *u, const char *file, uint64_t v) {
         char buf[DECIMAL_STR_MAX(uint64_t) + 1] = "max\n";
 
         if (v != CGROUP_LIMIT_MAX)
@@ -1205,6 +1207,16 @@ static void cgroup_context_apply(
                         cgroup_apply_unified_memory_limit(u, "memory.high", c->memory_high);
                         cgroup_apply_unified_memory_limit(u, "memory.max", max);
                         cgroup_apply_unified_memory_limit(u, "memory.swap.max", swap_max);
+
+                        if (c->memory_auto_pilot) {
+                                log_unit_debug(u, "Will start MemoryAutoPilot");
+                                r = unit_start_memory_auto_pilot(u);
+                                if (r < 0)
+                                        log_unit_error_errno(u, r, "Failed to start MemoryAutoPilot: %m");
+                        } else {
+                                log_unit_debug(u, "Will stop MemoryAutoPilot");
+                                unit_stop_memory_auto_pilot(u);
+                        }
 
                         (void) set_attribute_and_warn(u, "memory", "memory.oom.group", one_zero(c->memory_oom_group));
 
@@ -3100,6 +3112,70 @@ int unit_get_memory_current(Unit *u, uint64_t *ret) {
                 return r;
 
         return safe_atou64(v, ret);
+}
+
+int unit_get_memory_high(Unit *u, uint64_t *ret) {
+        _cleanup_free_ char *v = NULL;
+        int r;
+
+        assert(u);
+        assert(ret);
+
+        if (!UNIT_CGROUP_BOOL(u, memory_accounting))
+                return -ENODATA;
+
+        if (!u->cgroup_path)
+                return -ENODATA;
+
+        if ((u->cgroup_realized_mask & CGROUP_MASK_MEMORY) == 0)
+                return -ENODATA;
+
+        r = cg_get_attribute("memory", u->cgroup_path, "memory.high", &v);
+        if (r == -ENOENT)
+                return -ENODATA;
+        if (r < 0)
+                return r;
+
+        return safe_atou64(v, ret);
+}
+
+int unit_get_memory_pressure_total(Unit *u, uint64_t *ret) {
+        _cleanup_free_ char *v = NULL;
+        char *p;
+        int r;
+
+        assert(u);
+        assert(ret);
+
+        if (!UNIT_CGROUP_BOOL(u, memory_accounting))
+                return -ENODATA;
+
+        if (!u->cgroup_path)
+                return -ENODATA;
+
+        if ((u->cgroup_realized_mask & CGROUP_MASK_MEMORY) == 0)
+                return -ENODATA;
+
+        /* For now, we only care about the first line "some" of
+         * memory.pressure, so it's OK to use cg_get_attribute here. */
+        r = cg_get_attribute("memory", u->cgroup_path, "memory.pressure", &v);
+        if (r == -ENOENT)
+                return -ENODATA;
+        if (r < 0)
+                return r;
+
+        /* Parsing the memory pressure file format:
+         *
+         * some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+         * full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+         *
+         * We're only got the first line and we're only interested in
+         * the "total" field, which is the last in the file, so let's
+         * just look for the last '=' character in the string. */
+        if (!(p = strrchr(v, '=')))
+                return -ENODATA;
+
+        return safe_atou64(&p[1], ret);
 }
 
 int unit_get_tasks_current(Unit *u, uint64_t *ret) {

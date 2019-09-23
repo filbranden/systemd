@@ -253,6 +253,11 @@ typedef struct Unit {
         /* The  current counter of the oom_kill field in the memory.events cgroup attribute */
         uint64_t oom_kill_last;
 
+        /* Memory autopilot - TODO: Move to a separate struct? */
+        sd_event_source *memory_auto_pilot_event_source;
+        uint64_t memory_pressure_total;
+        int memory_pressure_countdown;
+
         /* Where the io.stat data was at the time the unit was started */
         uint64_t io_accounting_base[_CGROUP_IO_ACCOUNTING_METRIC_MAX];
         uint64_t io_accounting_last[_CGROUP_IO_ACCOUNTING_METRIC_MAX]; /* the most recently read value */
@@ -713,6 +718,9 @@ void unit_unwatch_all_pids(Unit *u);
 
 int unit_enqueue_rewatch_pids(Unit *u);
 void unit_dequeue_rewatch_pids(Unit *u);
+
+int unit_start_memory_auto_pilot(Unit *u);
+void unit_stop_memory_auto_pilot(Unit *u);
 
 int unit_install_bus_match(Unit *u, sd_bus *bus, const char *name);
 int unit_watch_bus_name(Unit *u, const char *name);

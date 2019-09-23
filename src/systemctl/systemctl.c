@@ -4089,6 +4089,7 @@ typedef struct UnitStatusInfo {
         uint64_t memory_max;
         uint64_t memory_swap_max;
         uint64_t memory_limit;
+        bool memory_auto_pilot;
         uint64_t cpu_usage_nsec;
         uint64_t tasks_current;
         uint64_t tasks_max;
@@ -4510,6 +4511,10 @@ static void print_status_info(
                         }
                         if (i->memory_limit != CGROUP_LIMIT_MAX) {
                                 printf("%slimit: %s", prefix, format_bytes(buf, sizeof(buf), i->memory_limit));
+                                prefix = " ";
+                        }
+                        if (i->memory_auto_pilot) {
+                                printf("%sautopilot: on", prefix);
                                 prefix = " ";
                         }
                         printf(")");
@@ -5527,6 +5532,7 @@ static int show_one(
                 { "MemoryMax",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_max)                        },
                 { "MemorySwapMax",                  "t",               NULL,           offsetof(UnitStatusInfo, memory_swap_max)                   },
                 { "MemoryLimit",                    "t",               NULL,           offsetof(UnitStatusInfo, memory_limit)                      },
+                { "MemoryAutoPilot",                "b",               NULL,           offsetof(UnitStatusInfo, memory_auto_pilot)                 },
                 { "CPUUsageNSec",                   "t",               NULL,           offsetof(UnitStatusInfo, cpu_usage_nsec)                    },
                 { "TasksCurrent",                   "t",               NULL,           offsetof(UnitStatusInfo, tasks_current)                     },
                 { "TasksMax",                       "t",               NULL,           offsetof(UnitStatusInfo, tasks_max)                         },
