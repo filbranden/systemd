@@ -1899,9 +1899,12 @@ static int setup_private_users(uid_t uid, gid_t gid) {
          * we however lack after opening the user namespace. To work around this we fork() a temporary child process,
          * which waits for the parent to create the new user namespace while staying in the original namespace. The
          * child then writes the UID mapping, under full privileges. The parent waits for the child to finish and
-         * continues execution normally. */
+         * continues execution normally.
+         * For unprivileged users (i.e. without capabilities), the root to root mapping is excluded. As such, it
+         * does not need CAP_SETUID to write the single line mapping to itself. */
 
-        if (uid != 0 && uid_is_valid(uid)) {
+        /* Can only set up multiple mappings with CAP_SETUID. */
+        if (have_effective_cap(CAP_SETUID) && uid != 0 && uid_is_valid(uid)) {
                 r = asprintf(&uid_map,
                              "0 0 1\n"                      /* Map root → root */
                              UID_FMT " " UID_FMT " 1\n",    /* Map $UID → $UID */
@@ -1909,12 +1912,15 @@ static int setup_private_users(uid_t uid, gid_t gid) {
                 if (r < 0)
                         return -ENOMEM;
         } else {
-                uid_map = strdup("0 0 1\n");            /* The case where the above is the same */
-                if (!uid_map)
+                r = asprintf(&uid_map,
+                             UID_FMT " " UID_FMT " 1\n",
+                             geteuid(), geteuid());     /* Map $EUID → $EUID */
+                if (r < 0)
                         return -ENOMEM;
         }
 
-        if (gid != 0 && gid_is_valid(gid)) {
+        /* Can only set up multiple mappings with CAP_SETGID. */
+        if (have_effective_cap(CAP_SETGID) && gid != 0 && gid_is_valid(gid)) {
                 r = asprintf(&gid_map,
                              "0 0 1\n"                      /* Map root → root */
                              GID_FMT " " GID_FMT " 1\n",    /* Map $GID → $GID */
@@ -1922,8 +1928,10 @@ static int setup_private_users(uid_t uid, gid_t gid) {
                 if (r < 0)
                         return -ENOMEM;
         } else {
-                gid_map = strdup("0 0 1\n");            /* The case where the above is the same */
-                if (!gid_map)
+                r = asprintf(&gid_map,
+                             GID_FMT " " GID_FMT " 1\n",
+                             getegid(), getegid());     /* Map $EGID -> $EGID */
+                if (r < 0)
                         return -ENOMEM;
         }
 
@@ -2933,6 +2941,7 @@ static int exec_child(
         char **final_argv = NULL;
         dev_t journal_stream_dev = 0;
         ino_t journal_stream_ino = 0;
+        bool userns_setup = false;
         bool needs_sandboxing,          /* Do we need to set up full sandboxing? (i.e. all namespacing, all MAC stuff, caps, yadda yadda */
                 needs_setuid,           /* Do we need to do the actual setresuid()/setresgid() calls? */
                 needs_mount_namespace,  /* Do we need to set up a mount namespace for this kernel? */
@@ -3368,6 +3377,30 @@ static int exec_child(
                 }
         }
 
+        if (needs_sandboxing) {
+#if HAVE_SELINUX
+                if (use_selinux && params->selinux_context_net && socket_fd >= 0) {
+                        r = mac_selinux_get_child_mls_label(socket_fd, command->path, context->selinux_context, &mac_selinux_context_net);
+                        if (r < 0) {
+                                *exit_status = EXIT_SELINUX_CONTEXT;
+                                return log_unit_error_errno(unit, r, "Failed to determine SELinux context: %m");
+                        }
+                }
+#endif
+
+                /* If we're unprivileged, set up the user namespace first to enable use of the other namespaces.
+                 * Users with CAP_SYS_ADMIN can set up user namespaces last because they will be able to
+                 * set up the all of the other namespaces (i.e. network, mount, UTS) without a user namespace. */
+                if (context->private_users && !have_effective_cap(CAP_SYS_ADMIN)) {
+                        userns_setup = true;
+                        r = setup_private_users(uid, gid);
+                        if (r < 0) {
+                                *exit_status = EXIT_USER;
+                                return log_unit_error_errno(unit, r, "Failed to set up user namespacing for unprivileged user: %m");
+                        }
+                }
+        }
+
         if ((context->private_network || context->network_namespace_path) && runtime && runtime->netns_storage_socket[0] >= 0) {
 
                 if (ns_type_supported(NAMESPACE_NET)) {
@@ -3421,23 +3454,17 @@ static int exec_child(
                 }
         }
 
-        if (needs_sandboxing) {
-#if HAVE_SELINUX
-                if (use_selinux && params->selinux_context_net && socket_fd >= 0) {
-                        r = mac_selinux_get_child_mls_label(socket_fd, command->path, context->selinux_context, &mac_selinux_context_net);
-                        if (r < 0) {
-                                *exit_status = EXIT_SELINUX_CONTEXT;
-                                return log_unit_error_errno(unit, r, "Failed to determine SELinux context: %m");
-                        }
-                }
-#endif
+        /* If the user namespace was not set up above, try to do it now.
+         * It's preferred to set up the user namespace later (after all other namespaces) so as not to be
+         * restricted by rules pertaining to combining user namspaces with other namespaces (e.g. in the
+         * case of mount namespaces being less privileged when the mount point list is copied from a
+         * different user namespace). */
 
-                if (context->private_users) {
-                        r = setup_private_users(uid, gid);
-                        if (r < 0) {
-                                *exit_status = EXIT_USER;
-                                return log_unit_error_errno(unit, r, "Failed to set up user namespacing: %m");
-                        }
+        if (needs_sandboxing && context->private_users && !userns_setup) {
+                r = setup_private_users(uid, gid);
+                if (r < 0) {
+                        *exit_status = EXIT_USER;
+                        return log_unit_error_errno(unit, r, "Failed to set up user namespacing: %m");
                 }
         }
 
