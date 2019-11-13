@@ -802,6 +802,24 @@ install_dbus() {
     done
 }
 
+install_user_dbus() {
+    inst $ROOTLIBDIR/user/dbus.socket
+    inst_symlink /etc/systemd/user/sockets.target.wants/dbus.socket
+
+    # Newer Fedora versions use dbus-broker by default. Let's install it is available.
+    if [ -f $ROOTLIBDIR/user/dbus-broker.service ]; then
+        inst $ROOTLIBDIR/user/dbus-broker.service
+        inst_symlink /etc/systemd/user/dbus.service
+    elif [ -f $ROOTLIBDIR/system/dbus-daemon.service ]; then
+        # Fedora rawhide replaced dbus.service with dbus-daemon.service
+        inst $ROOTLIBDIR/user/dbus-daemon.service
+        # Alias symlink
+        inst_symlink /etc/systemd/user/dbus.service
+    else
+        inst $ROOTLIBDIR/user/dbus.service
+    fi
+}
+
 install_pam() {
     (
     if [[ "$LOOKS_LIKE_DEBIAN" ]] && type -p dpkg-architecture &>/dev/null; then
@@ -870,6 +888,17 @@ install_terminfo() {
         [ -f ${_terminfodir}/l/linux ] && break
     done
     dracut_install -o ${_terminfodir}/l/linux
+}
+
+enable_user_manager() {
+    local _userid
+    [[ $# -gt 0 ]] || set -- nobody
+    mkdir -p "$initdir/var/lib/systemd/linger"
+    for _userid; do
+        touch "$initdir/var/lib/systemd/linger/$_userid"
+    done
+    dracut_install su
+    install_user_dbus
 }
 
 setup_testsuite() {
